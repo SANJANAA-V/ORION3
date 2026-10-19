@@ -138,7 +138,7 @@ python bench_api.py            # measures round-trip time over 300 requests
 |---|---|
 | `orion3_sim_v3.py` | Simulator, features, models, evaluation |
 | `orion3_text.py` | Message model, text normalisation, corpus builder |
-| `data/text_train.csv.gz` | Normalised message corpus (see `data/ATTRIBUTION.md`) |
+|` text_train.csv.gz` | Normalised message corpus (see ATTRIBUTION.md) |
 | `orion3_core.py` | Trains and scores one payment, builds the reasons |
 | `app.py` | Streamlit demo |
 | `api.py`, `bench_api.py` | FastAPI endpoint and latency benchmark |
@@ -153,4 +153,4 @@ python bench_api.py            # measures round-trip time over 300 requests
 - Real smishing messages: "Fishing for Smishing" dataset (Agarwal, Papasavva, Suarez-Tangil, Vasek; ACM IMC 2025), CC BY 4.0, github.com/reportsmishing/Smishing-Dataset-IMC25.
 - Real legitimate SMS: UCI SMS Spam Collection (Almeida and Gomez Hidalgo), CC BY 4.0.
 - Fraud transactions: IEEE-CIS Fraud Detection (Kaggle competition data, used under the competition rules, not redistributed here).
-- Details of the changes made to the message data are in `data/ATTRIBUTION.md`.
+- Details of the changes made to the message data are in `ATTRIBUTION.md`.
