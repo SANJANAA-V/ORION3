@@ -8,7 +8,7 @@ Inputs (all optional, but give at least --classmates):
 
 It reports, for each test set:  rows, scam share, PR-AUC, ROC-AUC, precision / recall / false-positive rate at 0.5,
 for TWO text models:
-  1. "Demo model"  : the message model inside the demo (trained on SIMULATED template messages)
+  1. "Demo model"  : the message model inside the demo (trained on real public smishing + legitimate SMS)
   2. "UCI model"   : TF-IDF + logistic regression trained on the real UCI SMS Spam Collection
 and saves every wrong prediction so you can read the mistakes.
 
@@ -90,7 +90,7 @@ def main():
     rows = []
     for tname, (texts, y) in tests.items():
         y = y.to_numpy()
-        rows.append(evaluate("Demo model (simulated training)", tname, texts, y, demo["txt"].predict_proba(demo["vec"].transform(texts))[:, 1], a.out))
+        rows.append(evaluate("Demo model (real-data training)", tname, texts, y, demo["txt"].predict_proba(list(texts))[:, 1], a.out))
         rows.append(evaluate("UCI model (real spam training)", tname, texts, y, uci_model.predict_proba(vec.transform(texts))[:, 1], a.out))
     res = pd.DataFrame(rows); res.to_csv(os.path.join(a.out, "text_external_results.csv"), index=False)
     print(res.round(3).to_string(index=False))

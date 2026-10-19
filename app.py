@@ -49,11 +49,10 @@ if st.button("Assess this payment", type="primary"):
     st.markdown("**Why**")
     for reason in r["reasons"]:
         st.markdown(f"- {reason}")
-    m1, m2, m3 = st.columns(3)
+    m1, m2 = st.columns(2)
     s = r["signals"]
-    m1.metric("Sender behaviour", f"{s['behaviour']:.3f}")
-    m2.metric("Receiver network", f"{s['receiver_network']:.3f}")
-    m3.metric("Message", "no message" if s["message"] is None else f"{s['message']:.3f}")
+    m1.metric("Behaviour + receiver network", f"{s['behaviour_and_network']:.3f}")
+    m2.metric("Message", "no message" if s["message"] is None else f"{s['message']:.3f}")
     st.caption(f"Warn at risk ≥ {r['thresholds']['warn']:.3f}, block at ≥ {r['thresholds']['block']:.3f} "
                f"(set on simulated validation data). Scored in {r['latency_ms']:.1f} ms. "
                "The risk score is a model output, not a calibrated probability.")
@@ -61,7 +60,7 @@ if st.button("Assess this payment", type="primary"):
 with st.expander("What is real and what is simulated?"):
     st.markdown(
         "- **Simulated:** all payments, accounts, scam campaigns and messages used to train these models.\n"
-        "- **Real:** nothing in this demo is real payment data. Separate benchmarks on real public data "
-        "(IEEE-CIS card fraud, UCI SMS spam) are in the GitHub repository.\n"
-        "- The message model learned from a few fixed templates, so its scores here say little about real scam messages.\n"
+        "- **Real:** the message model is trained on real public data (real smishing messages from the IMC 2025 dataset and real "
+        "legitimate SMS). No real payment data is used. Benchmarks on real fraud data (IEEE-CIS) are in the GitHub repository.\n"
+        "- The message model is untested on real legitimate bank and UPI alerts, and it adds little on top of the payment signals in my tests.\n"
         "- Reasons come from the fusion model's own weights, not from a separate text generator.")

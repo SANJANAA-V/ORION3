@@ -6,10 +6,11 @@ label (e.g. receiver_txns_10m was overwritten for scam rows), so models only
 recovered the generator. Here features are COMPUTED from a generated event
 stream, in time order, using only past events. Scams are campaigns (one mule
 account, many victims, forwarding of money), and hard negatives (fundraiser
-bursts, legit alarming bank messages, legit high-value payments) are present.
+bursts, formal legit bank messages, legit high-value payments) are present.
+Message text comes from real public data (orion3_text.py); payments, accounts and campaigns are simulated.
 
 Run:  python orion3_sim_v3.py
-Everything below is SYNTHETIC. State that in the README.
+Payments, accounts and campaigns are SYNTHETIC. State that in the README.
 """
 import time
 import numpy as np
@@ -22,65 +23,60 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer
+import orion3_text as OT
 
 SEED = 42
 DAYS, DAY_MIN = 30, 1440
 HELDOUT = "impersonation"          # only appears in the last 6 days (test period)
 TRAIN_END, VAL_END = 18, 24        # day index cut-offs: train <18, val 18-23, test >=24
-BANKS = ["SBI", "HDFC", "ICICI", "Axis", "Canara"]
+# Scam families = real smishing types from the public IMC 2025 dataset. "impersonation" (hey mum/dad + wrong number)
+# is held out: it never appears in the training or validation days and is excluded from message-model training.
+FAMILY_TYPES = {"banking": ["banking"], "delivery": ["delivery"], "government": ["government"], "telecom": ["telecom"],
+                "impersonation": ["hey mum/dad", "wrong number"]}
+FORMAL_SOURCES = ("author_legit_A", "author_legit_B", "author_legit_C")
 
-NORMAL_NOTES = ["rent for october", "thanks for dinner", "chai", "groceries", "split the bill",
-                "electricity bill", "school fees", "mobile recharge", "movie tickets", "birthday gift",
-                "auto fare", "milk", "lunch", "returning the money you lent", "tuition fee", "gym fee",
-                "payment for used phone", "plumber charges", "advance for the bike"]
-CONTRIB_NOTES = ["contribution for temple fund", "class gift contribution", "flood relief donation",
-                 "wedding gift pooling", "farewell party contribution"]
-LEGIT_ALARMING = [
-    "Your {bank} statement is ready, verify account details at the branch",
-    "Reward points credited to your account",
-    "Urgent: electricity bill due tomorrow, pay at the office counter",
-    "Your refund of Rs {amt} has been processed to your account",
-    "Dear customer, complete your KYC at the nearest {bank} branch with documents",
-    "Payment reminder: insurance premium is due, pay via the official app"]
-SCAM_TEMPLATES = {
-    "fake_kyc": ["{bank} KYC update pending. Verify now or your account will be blocked {link}",
-                 "Dear customer your {bank} account will be suspended today, complete KYC {link}",
-                 "KYC expired. Update PAN and Aadhaar details immediately {link}",
-                 "{bank}: account on hold, verify your details at {link} within 24 hours"],
-    "prize": ["Congratulations! You won Rs {amt} in the lucky draw. Claim your reward {link}",
-              "You are selected for a cashback reward of Rs {amt}. Pay processing fee to claim",
-              "Prize notification: claim your gift voucher before it expires {link}"],
-    "fake_support": ["{bank} customer care: your refund of Rs {amt} is pending, share details to receive it",
-                     "Support team here. We detected an issue with your account, call {phone} to fix",
-                     "Your complaint is being processed, please confirm card details with our executive"],
-    "remote_access": ["To resolve your issue install AnyDesk and share the code with our agent",
-                      "Our technician needs remote access to your phone to reverse the payment, install the app {link}",
-                      "Download the support app and give us the 9 digit code to refund your money"],
-    "urgent_transfer": ["Pay Rs {amt} immediately to avoid a penalty and legal action",
-                        "Your electricity will be cut tonight, transfer Rs {amt} now to this number",
-                        "Last notice: send the pending amount today or your account will be reported"],
-    "impersonation": ["Hi, this is {name}, I changed my number. I am in hospital, please send Rs {amt} urgently, will return tonight",
-                      "Beta it's me, phone broke, using a friend's phone. Need Rs {amt} for a small emergency, will repay tomorrow",
-                      "Hello sir, I am calling for {name} ji, he had an accident, please transfer Rs {amt} to this account"],
-}
+
+def build_pools():
+    """Message pools per period, taken from the real-data corpus (orion3_text.py). Scam messages in a period come from
+    that period's template-group split, so the message model never trained on the templates it is tested on."""
+    c = OT.load_corpus()
+    if c is None:
+        raise SystemExit("data/text_train.csv.gz is missing. Run: python orion3_text.py --rebuild")
+    pools = {"scam": {}, "casual": {}, "formal": {}}
+    for split in ("train", "val", "test"):
+        d = c[c.split == split]; pos = d[d.label == 1]; neg = d[d.label == 0]
+        pools["scam"][split] = {f: pos[pos.scam_type.isin(types)].text_norm.tolist() for f, types in FAMILY_TYPES.items()}
+        pools["casual"][split] = neg[neg.source == "uci_ham"].text_norm.tolist()
+        pools["formal"][split] = neg[neg.source.isin(FORMAL_SOURCES)].text_norm.tolist()
+    pools["scam"]["train"]["impersonation"] = pools["scam"]["val"]["impersonation"] = []
+    return pools
+
+
+def period(minute):
+    day = minute // DAY_MIN
+    return "train" if day < TRAIN_END else "val" if day < VAL_END else "test"
+
+
 HOUR_P = np.array([1, 1, 1, 1, 1, 2, 3, 5, 7, 8, 8, 8, 8, 8, 8, 8, 8, 9, 10, 10, 9, 7, 4, 2], float)
 HOUR_P /= HOUR_P.sum()
 
 
-def fill(rng, tpl):
-    s = tpl.format(bank=rng.choice(BANKS), amt=int(rng.integers(500, 50000)),
-                   link="bit.ly/" + "".join(rng.choice(list("abcdefghjkmnp23456789"), 6)),
-                   phone="1800" + str(int(rng.integers(100000, 999999))),
-                   name=rng.choice(["Ravi", "Anita", "Suresh", "Priya", "Karthik"]))
-    if rng.random() < 0.3: s = s.lower()
-    if rng.random() < 0.2: s = s.replace(",", "").replace(".", "")
-    return s
-
-
 def simulate(seed=SEED, hard=False, n_users=3000, n_merchants=300, n_collectors=40, n_mules=40, n_campaigns=None):
-    """hard=True: low-and-slow campaigns, small scam amounts, fewer messages, more legit bursts and alarming legit messages."""
+    """hard=True: low-and-slow campaigns, small scam amounts, fewer messages, more legit bursts and more formal legit messages.
+    Messages are real text from public data (see build_pools): scam messages are real smishing, legitimate ones are real
+    casual SMS plus author-written bank/UPI notifications."""
     n_campaigns = n_campaigns or (80 if hard else 45)
     rng = np.random.default_rng(seed)
+    pools = build_pools(); q_formal = 0.5 if hard else 0.25
+
+    def legit_msg(t):
+        per = period(t); kind = "formal" if (rng.random() < q_formal and pools["formal"][per]) else "casual"
+        pool = pools[kind][per]
+        return pool[int(rng.integers(0, len(pool)))]
+
+    def scam_msg(fam, t):
+        pool = pools["scam"][period(t)][fam]
+        return pool[int(rng.integers(0, len(pool)))] if pool else ""
     P = n_users; M0 = P; C0 = M0 + n_merchants; U0 = C0 + n_collectors; K0 = U0 + n_mules
     mules = list(range(U0, U0 + n_mules)); cashouts = list(range(K0, K0 + 30))
     scale = np.exp(rng.normal(np.log(400), 0.7, P))
@@ -112,17 +108,17 @@ def simulate(seed=SEED, hard=False, n_users=3000, n_merchants=300, n_collectors=
                 if r == s: r = (s + 1) % P
             msg = ""
             if rng.random() < 0.35:
-                msg = rng.choice(NORMAL_NOTES) if rng.random() > (0.25 if hard else 0.08) else fill(rng, rng.choice(LEGIT_ALARMING))
+                msg = legit_msg(t)
             add(t, s, r, a, msg, "normal", "payment")
     # legit fundraiser bursts (hard negatives: many new senders -> one person)
     for c in range(C0, U0):
         for _ in range(int(rng.integers(2, 5)) if hard else int(rng.integers(1, 3))):
             t0 = int(rng.integers(0, DAYS)) * DAY_MIN + int(rng.integers(8 * 60, 18 * 60))
             for s in rng.choice(P, int(rng.integers(20, 80)) if hard else int(rng.integers(15, 60)), replace=False):
-                add(t0 + int(rng.integers(0, 360)), s, c, scale[s] * rng.uniform(0.3, 1.0),
-                    rng.choice(CONTRIB_NOTES) if rng.random() < 0.6 else "", "normal", "payment")
+                tt = t0 + int(rng.integers(0, 360))
+                add(tt, s, c, scale[s] * rng.uniform(0.3, 1.0), legit_msg(tt) if rng.random() < 0.6 else "", "normal", "payment")
     # scam campaigns
-    fams = [f for f in SCAM_TEMPLATES]
+    fams = list(FAMILY_TYPES)
     for _ in range(n_campaigns):
         fam = fams[int(rng.integers(0, len(fams)))]
         day = int(rng.integers(24, DAYS)) if fam == HELDOUT else int(rng.integers(0, DAYS))
@@ -132,7 +128,7 @@ def simulate(seed=SEED, hard=False, n_users=3000, n_merchants=300, n_collectors=
         for v in rng.choice(P, int(rng.integers(4, 14)) if hard else int(rng.integers(8, 26)), replace=False):
             t = t0 + int(rng.integers(0, dur))
             a = scale[v] * (rng.uniform(3, 12) if rng.random() < (0.4 if hard else 0.7) else rng.uniform(0.5, 2.5))
-            msg = fill(rng, rng.choice(SCAM_TEMPLATES[fam])) if rng.random() < (0.45 if hard else 0.6) else ""
+            msg = scam_msg(fam, t) if rng.random() < (0.45 if hard else 0.6) else ""
             add(t, v, mule, min(a, 50000), msg, fam, "payment")
             if rng.random() < (0.6 if hard else 0.8):   # mule forwards the money
                 delay = int(rng.integers(1, 40)) if not slow else int(rng.integers(60, 360))
@@ -174,7 +170,7 @@ def add_features(df):
 
 BEH = ["log_amount", "amount_ratio", "sender_n_prior", "is_new_receiver", "hour", "is_merchant"]
 NET = ["rcv_unique_senders_60m", "rcv_txns_60m", "rcv_out_60m", "rcv_age_min"]
-FUS = ["p_beh", "p_net", "p_txt", "has_message"]
+FUS = ["p_beh_net", "p_txt", "has_message"]
 KEYWORDS = ["verify", "blocked", "reward", "prize", "remote", "urgent", "send", "suspended", "claim", "refund"]
 
 
@@ -188,14 +184,14 @@ def fusion_features(X):
     """Fusion inputs in log-odds space. Missing message -> neutral 0 plus has_message flag (no fake score)."""
     has = X["has_message"].values
     txt = np.where(has == 1, _logit(np.nan_to_num(X["p_txt"].values.astype(float), nan=0.5)), 0.0)
-    return np.column_stack([_logit(X["p_beh"].values), _logit(X["p_net"].values), txt, has])
+    return np.column_stack([_logit(X["p_beh_net"].values), txt, has])
 
 
-FUSION_NAMES = ["behaviour", "receiver_network", "message", "has_message"]
+FUSION_NAMES = ["behaviour_network", "message", "has_message"]
 
 
 def new_fusion():
-    """Logistic regression on the three signals: few parameters, stable with few scams, and readable weights."""
+    """Logistic regression on the behaviour+network score and the message score: few parameters, stable with few scams, readable weights."""
     return make_pipeline(FunctionTransformer(fusion_features), LogisticRegression(C=1.0, max_iter=2000))
 def recall_at_threshold(y, p, thr): return float(((p >= thr) & (y == 1)).sum() / max(1, (y == 1).sum()))
 def fpr_at_threshold(y, p, thr): return float(((p >= thr) & (y == 0)).sum() / max(1, (y == 0).sum()))
@@ -218,7 +214,7 @@ def base_predict(models, d):
     out["p_net"] = models["net"].predict_proba(d[NET])[:, 1]
     out["p_beh_net"] = models["beh_net"].predict_proba(d[BEH + NET])[:, 1]
     p = np.full(len(d), np.nan); has = d.has_message.values == 1
-    if has.any(): p[has] = models["txt"].predict_proba(models["vec"].transform(d.message[has]))[:, 1]
+    if has.any(): p[has] = models["txt"].predict_proba(list(d.message[has]))[:, 1]
     out["p_txt"] = p
     out["has_message"] = d.has_message.values
     return out
@@ -229,15 +225,19 @@ def rules_score(d):
     return (0.4 * (d.rcv_unique_senders_60m >= 3) + 0.3 * ((d.is_new_receiver == 1) & (d.amount_ratio.fillna(0) >= 3)) + 0.3 * k).astype(float).values
 
 
-def fit_all(df):
+def fit_all(df, text_source="real"):
     """Fit base models on TRAIN, fusion on VALIDATION. Validation scores of the fusion are
-    5-fold cross-validated so thresholds are not picked from scores the fusion was fitted on."""
+    5-fold cross-validated so thresholds are not picked from scores the fusion was fitted on.
+    text_source="real": message model trained on real public data (orion3_text.py, never sees simulator messages).
+    text_source="simulated": message model trained on the simulator's own template messages (old behaviour)."""
     sc, tr, va, te = make_splits(df)
     msg_tr = tr[tr.has_message == 1]
-    vec = TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True)
+    txt = OT.default_text_model() if text_source == "real" else None
+    if txt is None:
+        text_source = "simulated"
+        txt = OT.build_text_model(msg_tr.message, msg_tr.is_scam)
     models = {"beh": hgb().fit(tr[BEH], tr.is_scam), "net": hgb().fit(tr[NET], tr.is_scam),
-              "beh_net": hgb().fit(tr[BEH + NET], tr.is_scam), "vec": vec,
-              "txt": LogisticRegression(max_iter=1000, C=1.0, class_weight="balanced").fit(vec.fit_transform(msg_tr.message), msg_tr.is_scam)}
+              "beh_net": hgb().fit(tr[BEH + NET], tr.is_scam), "txt": txt, "text_source": text_source}
     Pva, Pte = base_predict(models, va), base_predict(models, te)
     models["fusion"] = new_fusion().fit(Pva[FUS], va.is_scam)
     Pva["p_fusion"] = cross_val_predict(new_fusion(), Pva[FUS], va.is_scam,
@@ -247,11 +247,11 @@ def fit_all(df):
     return {"models": models, "sc": sc, "tr": tr, "va": va, "te": te, "Pva": Pva, "Pte": Pte}
 
 
-def main(hard=False):
+def main(hard=False, text_source="real"):
     df = simulate(hard=hard)
-    R = fit_all(df)
+    R = fit_all(df, text_source)
     sc, tr, va, te, Pva, Pte, models = R["sc"], R["tr"], R["va"], R["te"], R["Pva"], R["Pte"], R["models"]
-    print(f"events={len(df):,} scored={len(sc):,} scam_rate={sc.is_scam.mean():.3%}")
+    print(f"events={len(df):,} scored={len(sc):,} scam_rate={sc.is_scam.mean():.3%} | message model trained on: {models['text_source']} data")
     for n, d in [("train", tr), ("val", va), ("test", te)]:
         print(f"{n}: rows={len(d):,} scams={int(d.is_scam.sum())} families={sorted(d[d.is_scam == 1].family.unique())}")
     y_va, y_te = va.is_scam.values, te.is_scam.values
