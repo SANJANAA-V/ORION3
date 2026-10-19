@@ -19,7 +19,7 @@ except Exception as e:           # show the real problem instead of a blank page
     st.stop()
 
 st.title("ORION³ — pre-payment scam-risk demo")
-st.warning("Research demo trained on SIMULATED data. It is not connected to any bank or UPI system "
+st.warning("Research demo: payment behaviour is SIMULATED, the message model is trained on real public data. It is not connected to any bank or UPI system "
            "and must not be used for real payment decisions.")
 
 preset_name = st.selectbox("Start from an example", list(core.PRESETS.keys()))
